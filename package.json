@@ -1,0 +1,23 @@
+{
+  "name": "bitcoin-frontend",
+  "version": "0.0.1",
+  "description": "",
+  "main": "index.js",
+  "dependencies": {
+    "http-proxy": "^1.16.2",
+    "spdy": "git://github.com/anandsuresh/node-spdy.git#fix/agentGoAway"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/modulesio/bitcoin-frontend.git"
+  },
+  "author": "Avaer Kazmer <a@modules.io>",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/modulesio/bitcoin-frontend/issues"
+  },
+  "homepage": "https://github.com/modulesio/bitcoin-frontend#readme"
+}
