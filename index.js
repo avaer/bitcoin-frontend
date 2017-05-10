@@ -3,6 +3,7 @@ const fs = require('fs');
 
 const spdy = require('spdy');
 const httpProxy = require('http-proxy');
+const request = require('request');
 
 const BITCOIND_PORT_FRONT = 18333;
 const BITCOIND_PORT_BACK = 18332;
@@ -42,16 +43,126 @@ const _requestCerts = () => new Promise((accept, reject) => {
   }
 });
 const _initBitcoindServer = certs => new Promise((accept, reject) => {
+  const _requestUtxos = address => new Promise((accept, reject) => {
+    request({
+      method: 'POST',
+      url: `http://localhost:${BITCOIND_PORT_BACK}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+      },
+      body: {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "searchrawtransactions",
+        "params": [
+          address,
+          1,
+          0,
+          9999999
+        ]
+      },
+      json: true,
+    }, (err, res, body) => {
+      if (!err) {
+        if (!body.error) {
+          accept(body.result);
+        } else {
+          reject(body.error);
+        }
+      } else {
+        reject(err);
+      }
+    });
+  })
+    .then(txs => {
+      const promises = [];
+      for (let i = 0; i < txs.length; i++) {
+        const tx = txs[i];
+
+        for (let j = 0; j < tx.vout.length; j++) {
+          promises.push(_requestGetTxOut(address, tx.txid, j));
+        }
+      }
+      return Promise.all(promises)
+        .then(txouts => txouts.filter(txout => !!txout));
+    });
+  const _requestGetTxOut = (address, txid, vout) => new Promise((accept, reject) => {
+    request({
+      method: 'POST',
+      url: `http://localhost:${BITCOIND_PORT_BACK}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+      },
+      body: {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "gettxout",
+        "params": [
+          txid,
+          vout,
+        ]
+      },
+      json: true,
+    }, (err, res, body) => {
+      if (!body.error) {
+        accept(body.result);
+      } else {
+        reject(body.error);
+      }
+    })
+  })
+  .then(txout => {
+    if (txout) {
+      return {
+        txid: txid,
+        vout: vout,
+        address: address,
+        account: '',
+        scriptPubKey: txout.scriptPubKey.hex,
+        confirmations: txout.confirmations,
+        amount: txout.value,
+        spendable: true,
+        solvable: true,
+      };
+    } else {
+      return txout;
+    }
+  });
+
   const server = spdy.createServer({
     cert: certs.cert,
     key: certs.privateKey,
   }, (req, res) => {
-    proxy.web(req, res, err => {
-      if (err) {
-        res.statusCode = 500;
-        res.end(err.stack);
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+      res.end();
+    } else {
+      let match;
+      if (req.method === 'GET' && (match = req.url.match(/^\/listunspent\/(.+)$/))) {
+        const address = match[1];
+
+        _requestUtxos(address)
+          .then(utxos => {
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify(utxos));
+          })
+          .catch(err => {
+            res.statusCode = 500;
+            res.end(err.stack);
+          });
+      } else {
+        proxy.web(req, res, err => {
+          if (err) {
+            res.statusCode = 500;
+            res.end(err.stack);
+          }
+        });
       }
-    });
+    }
   });
 
   const proxy = httpProxy.createProxyServer({
@@ -70,12 +181,19 @@ const _initCounterpartyLibServer = certs => new Promise((accept, reject) => {
     cert: certs.cert,
     key: certs.privateKey,
   }, (req, res) => {
-    proxy.web(req, res, err => {
-      if (err) {
-        res.statusCode = 500;
-        res.end(err.stack);
-      }
-    });
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+
+    if (req.method === 'OPTIONS') {
+      res.end();
+    } else {
+      proxy.web(req, res, err => {
+        if (err) {
+          res.statusCode = 500;
+          res.end(err.stack);
+        }
+      });
+    }
   });
 
   const proxy = httpProxy.createProxyServer({
@@ -89,6 +207,21 @@ const _initCounterpartyLibServer = certs => new Promise((accept, reject) => {
     }
   });
 });
+
+const _jsonParse = s => {
+  let error = null;
+  let result;
+  try {
+    result = JSON.parse(s);
+  } catch (err) {
+    error = err;
+  }
+  if (!error) {
+    return result;
+  } else {
+    return undefined;
+  }
+};
 
 _requestCerts()
   .then(certs => Promise.all([
