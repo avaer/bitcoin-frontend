@@ -68,7 +68,8 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         if (!body.error) {
           accept(body.result);
         } else {
-          reject(body.error);
+          const err = new Error(JSON.stringify(body.error));
+          reject(err);
         }
       } else {
         reject(err);
@@ -109,7 +110,8 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       if (!body.error) {
         accept(body.result);
       } else {
-        reject(body.error);
+        const err = new Error(JSON.stringify(body.error));
+        reject(err);
       }
     })
   })
@@ -130,6 +132,32 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       return txout;
     }
   });
+  const _requestSend = tx => new Promise((accept, reject) => {
+    request({
+      method: 'POST',
+      url: `http://localhost:${BITCOIND_PORT_BACK}`,
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+      },
+      body: {
+        "jsonrpc": "2.0",
+        "id": 0,
+        "method": "sendrawtransaction",
+        "params": [
+          tx,
+        ]
+      },
+      json: true,
+    }, (err, res, body) => {
+      if (!body.error) {
+        accept(body.result);
+      } else {
+        const err = new Error(JSON.stringify(body.error));
+        reject(err);
+      }
+    })
+  })
 
   const server = spdy.createServer({
     cert: certs.cert,
@@ -154,6 +182,33 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
             res.statusCode = 500;
             res.end(err.stack);
           });
+      } else if (req.method === 'POST' && req.url === '/send') {
+        const bs = [];
+
+        req.on('data', d => {
+          bs.push(d);
+        });
+        req.on('end', () => {
+          const b = Buffer.concat(bs);
+          const s = b.toString('utf8');
+          const j = _jsonParse(s);
+
+          if (typeof j === 'object' && j && typeof j.tx === 'string') {
+            const {tx} = j;
+
+            _requestSend(tx)
+              .then(() => {
+                res.end();
+              })
+              .catch(err => {
+                res.statusCode = 500;
+                res.end(err.stack);
+              });
+          } else {
+            res.statusCode = 400;
+            res.end();
+          }
+        });
       } else {
         proxy.web(req, res, err => {
           if (err) {
