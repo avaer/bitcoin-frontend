@@ -117,20 +117,24 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
   })
   .then(txout => {
     if (txout) {
-      return {
-        txid: txid,
-        vout: vout,
-        address: address,
-        account: '',
-        scriptPubKey: txout.scriptPubKey.hex,
-        confirmations: txout.confirmations,
-        amount: txout.value,
-        satoshis: txout.value * 1e8,
-        spendable: true,
-        solvable: true,
-      };
+      if (txout.scriptPubKey.addresses && txout.scriptPubKey.addresses.includes(address)) {
+        return {
+          txid: txid,
+          vout: vout,
+          address: address,
+          account: '',
+          scriptPubKey: txout.scriptPubKey.hex,
+          confirmations: txout.confirmations,
+          amount: txout.value,
+          satoshis: txout.value * 1e8,
+          spendable: true,
+          solvable: true,
+        };
+      } else {
+        return null;
+      }
     } else {
-      return txout;
+      return null;
     }
   });
   const _requestSend = tx => new Promise((accept, reject) => {
