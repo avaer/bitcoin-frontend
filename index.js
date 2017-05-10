@@ -187,6 +187,47 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
             res.statusCode = 500;
             res.end(err.stack);
           });
+      } else if (req.method === 'GET' && (match = req.url.match(/^\/balance\/(.+)$/))) {
+        const address = match[1];
+
+        _requestUtxos(address)
+          .then(utxos => {
+            let balance = 0;
+            for (let i = 0; i < utxos.length; i++) {
+              const utxo = utxos[i];
+
+              if (utxo.confirmations > 0) {
+                balance += utxo.satoshis;
+              }
+            }
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              balance,
+            }));
+          })
+          .catch(err => {
+            res.statusCode = 500;
+            res.end(err.stack);
+          });
+      } else if (req.method === 'GET' && (match = req.url.match(/^\/unconfirmedbalance\/(.+)$/))) {
+        const address = match[1];
+
+        _requestUtxos(address)
+          .then(utxos => {
+            let balance = 0;
+            for (let i = 0; i < utxos.length; i++) {
+              const utxo = utxos[i];
+              balance += utxo.satoshis;
+            }
+            res.setHeader('Content-Type', 'application/json');
+            res.end(JSON.stringify({
+              balance,
+            }));
+          })
+          .catch(err => {
+            res.statusCode = 500;
+            res.end(err.stack);
+          });
       } else if (req.method === 'POST' && req.url === '/send') {
         const bs = [];
 
