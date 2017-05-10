@@ -125,6 +125,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         scriptPubKey: txout.scriptPubKey.hex,
         confirmations: txout.confirmations,
         amount: txout.value,
+        satoshis: txout.value * 1e8,
         spendable: true,
         solvable: true,
       };
@@ -197,8 +198,11 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
             const {tx} = j;
 
             _requestSend(tx)
-              .then(() => {
-                res.end();
+              .then(txid => {
+                res.setHeader('Content-Type', 'application/json');
+                res.end(JSON.stringify({
+                  txid,
+                }));
               })
               .catch(err => {
                 res.statusCode = 500;
