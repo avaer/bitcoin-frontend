@@ -61,6 +61,10 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       this.lastBlockIndex = lastBlockIndex;
     }
 
+    getUtxos() {
+      return this.utxos;
+    }
+
     addVin(txid, vin) {
       const {txid: utxoTxid} = vin;
 
@@ -75,7 +79,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
 
           return Promise.resolve();
         } else {
-          const err = new Error('could not find txout: ' + txout);
+          const err = new Error('could not find txout: ' + utxoTxid);
           return Promise.reject(err);
         }
       } else {
@@ -89,11 +93,11 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       if (vout.scriptPubKey && vout.scriptPubKey.addresses && vout.scriptPubKey.addresses.includes(address)) {
         const utxo = {
           txid: txid,
-          vout: vout,
+          vout: vout.n,
           address: address,
           account: '',
           scriptPubKey: vout.scriptPubKey.hex,
-          confirmations: vout.confirmations,
+          // confirmations: vout.confirmations,
           amount: vout.value,
           satoshis: vout.value * 1e8,
           spendable: true,
@@ -110,42 +114,12 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
   }
   const utxoCaches = {};
 
-  const _requestUtxos = address => new Promise((accept, reject) => {
+  const _requestUtxos = address => {
     let utxoCache = utxoCaches[address];
     if (!utxoCache) {
       utxoCache = new UtxoCache(address);
       utxoCaches[address] = utxoCache;
     }
-
-    request({
-      method: 'POST',
-      url: `http://localhost:${BITCOIND_PORT_BACK}`,
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
-      },
-      body: {
-        "jsonrpc": "2.0",
-        "id": 0,
-        "method": "getblockcount",
-      },
-      json: true,
-    }, (err, res, body) => {
-      if (!err) {
-        if (!body.error) {
-          accept(body.result);
-        } else {
-          const err = new Error(JSON.stringify(body.error));
-          reject(err);
-        }
-      } else {
-        reject(err);
-      }
-    });
-  })
-  .then(currentBlockIndex => {
-    const lastBlockIndex = utxoCache.getLastBlockIndex();
-    const numBlocks = currentBlockIndex - lastBlockIndex;
 
     return new Promise((accept, reject) => {
       request({
@@ -158,13 +132,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         body: {
           "jsonrpc": "2.0",
           "id": 0,
-          "method": "searchrawtransactions",
-          "params": [
-            address,
-            1,
-            lastBlockIndex,
-            numBlocks,
-          ]
+          "method": "getblockcount",
         },
         json: true,
       }, (err, res, body) => {
@@ -180,47 +148,86 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         }
       });
     })
-    .then(txs => {
-      let i = 0;
-      let j = 0;
-      let k = 0;
-      const pool = new PromisePool(() => {
-        for (;;) {
-          if (i < txs.length) {
-            const tx = txs[i];
+    .then(currentBlockIndex => {
+      const lastBlockIndex = utxoCache.getLastBlockIndex();
+      const numBlocks = currentBlockIndex - lastBlockIndex;
 
-            if (j < tx.vin.length) {
-              const oldJ = j;
-              j++;
-              const vin = tx.vin[oldJ];
-
-              return utxoCache.addVin(tx.txid, vin);
+      return new Promise((accept, reject) => {
+        request({
+          method: 'POST',
+          url: `http://localhost:${BITCOIND_PORT_BACK}`,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+          },
+          body: {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "searchrawtransactions",
+            "params": [
+              address,
+              1,
+              lastBlockIndex,
+              numBlocks,
+            ]
+          },
+          json: true,
+        }, (err, res, body) => {
+          if (!err) {
+            if (!body.error) {
+              accept(body.result);
             } else {
-              if (k < tx.vout.length) {
-                const oldK = k;
-                k++;
-                const vout = tx.vout[oldK];
-
-                return utxoCache.addVout(tx.txid, vout);
-              } else {
-                i++;
-                j = 0;
-
-                continue;
-              }
+              const err = new Error(JSON.stringify(body.error));
+              reject(err);
             }
           } else {
-            return null;
+            reject(err);
           }
-        }
-      }, 8);
+        });
+      })
+      .then(txs => {
+        let i = 0;
+        let j = 0;
+        let k = 0;
+        const pool = new PromisePool(() => {
+          for (;;) {
+            if (i < txs.length) {
+              const tx = txs[i];
 
-      utxoCache.setLastBlockIndex(currentBlockIndex);
+              if (j < tx.vin.length) {
+                const oldJ = j;
+                j++;
+                const vin = tx.vin[oldJ];
 
-      return pool.start()
-        .then(() => utxoCache.getUtxos());
+                return utxoCache.addVin(tx.txid, vin);
+              } else {
+                if (k < tx.vout.length) {
+                  const oldK = k;
+                  k++;
+                  const vout = tx.vout[oldK];
+
+                  return utxoCache.addVout(tx.txid, vout);
+                } else {
+                  i++;
+                  j = 0;
+                  k = 0;
+
+                  continue;
+                }
+              }
+            } else {
+              return null;
+            }
+          }
+        }, 8);
+
+        utxoCache.setLastBlockIndex(currentBlockIndex);
+
+        return pool.start()
+          .then(() => utxoCache.getUtxos());
+      });
     });
-  });
+  };
   const _requestGetTxOut = (/* address, */txid, vout) => new Promise((accept, reject) => {
     request({
       method: 'POST',
