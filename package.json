@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "dependencies": {
+    "es6-promise-pool": "^2.4.4",
     "http-proxy": "^1.16.2",
     "request": "^2.81.0",
     "spdy": "git://github.com/anandsuresh/node-spdy.git#fix/agentGoAway"

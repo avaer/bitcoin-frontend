@@ -4,6 +4,7 @@ const fs = require('fs');
 const spdy = require('spdy');
 const httpProxy = require('http-proxy');
 const request = require('request');
+const PromisePool = require('es6-promise-pool');
 
 const BITCOIND_PORT_FRONT = 18333;
 const BITCOIND_PORT_BACK = 18332;
@@ -77,15 +78,30 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
     });
   })
     .then(txs => {
-      const promises = [];
-      for (let i = 0; i < txs.length; i++) {
-        const tx = txs[i];
+      let i = 0;
+      let j = 0;
+      const pool = new PromisePool(() => {
+        for (;;) {
+          if (i < txs.length) {
+            const tx = txs[i];
 
-        for (let j = 0; j < tx.vout.length; j++) {
-          promises.push(_requestGetTxOut(address, tx.txid, j));
+            if (j < tx.vout.length) {
+              const oldJ = j;
+              j++;
+              return _requestGetTxOut(address, tx.txid, oldJ);
+            } else {
+              i++;
+              j = 0;
+
+              continue;
+            }
+          } else {
+            return null;
+          }
         }
-      }
-      return Promise.all(promises)
+      }, 8);
+
+      return pool.start()
         .then(txouts => txouts.filter(txout => !!txout));
     });
   const _requestGetTxOut = (address, txid, vout) => new Promise((accept, reject) => {
