@@ -78,6 +78,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
     });
   })
     .then(txs => {
+      const txouts = [];
       let i = 0;
       let j = 0;
       const pool = new PromisePool(() => {
@@ -88,7 +89,13 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
             if (j < tx.vout.length) {
               const oldJ = j;
               j++;
-              return _requestGetTxOut(address, tx.txid, oldJ);
+
+              return _requestGetTxOut(address, tx.txid, oldJ)
+                .then(txout => {
+                  if (txout) {
+                    txouts.push(txout);
+                  }
+                });
             } else {
               i++;
               j = 0;
@@ -102,7 +109,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       }, 8);
 
       return pool.start()
-        .then(txouts => txouts.filter(txout => !!txout));
+        .then(() => txouts);
     });
   const _requestGetTxOut = (address, txid, vout) => new Promise((accept, reject) => {
     request({
