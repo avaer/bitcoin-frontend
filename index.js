@@ -50,6 +50,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
 
       this.lastTxIndex = 0;
       this.utxos = [];
+      this.seenTxIndex = {};
       // this.balance = 0;
     }
 
@@ -76,14 +77,9 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
           this.utxos.splice(utxoIndex, 1);
           /* const {value} = utxo;
           this.balance += value; */
-
-          return Promise.resolve();
         } else {
-          const err = new Error('could not find txout: ' + utxoTxid);
-          return Promise.reject(err);
+          throw new Error('could not find txout: ' + utxoTxid);
         }
-      } else {
-        return Promise.resolve();
       }
     }
 
@@ -108,8 +104,23 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         /* const {value} = vout;
         this.balance -= value; */
       }
+    }
 
-      return Promise.resolve();
+    addTx(tx) {
+      const {txid} = tx;
+
+      if (!this.seenTxIndex[txid]) {
+        const {vin, vout} = tx;
+
+        for (let i = 0; i < vin.length; i++) {
+          this.addVin(txid, vin[i]);
+        }
+        for (let i = 0; i < vout.length; i++) {
+          this.addVout(txid, vout[i]);
+        }
+
+        this.seenTxIndex[txid] = true;
+      }
     }
   }
   const utxoCaches = {};
@@ -120,81 +131,89 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       utxoCache = new UtxoCache(address);
       utxoCaches[address] = utxoCache;
     }
-    const lastTxIndex = utxoCache.getLastBlockIndex();
+    const lastTxIndex = utxoCache.getLastTxIndex();
 
-    return new Promise((accept, reject) => {
-      request({
-        method: 'POST',
-        url: `http://localhost:${BITCOIND_PORT_BACK}`,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
-        },
-        body: {
-          "jsonrpc": "2.0",
-          "id": 0,
-          "method": "searchrawtransactions",
-          "params": [
-            address,
-            1,
-            lastTxIndex,
-            9999999,
-          ]
-        },
-        json: true,
-      }, (err, res, body) => {
-        if (!err) {
-          if (!body.error) {
-            accept(body.result);
-          } else {
-            const err = new Error(JSON.stringify(body.error));
-            reject(err);
-          }
-        } else {
-          reject(err);
-        }
-      });
-    })
-    .then(txs => {
-      let i = 0;
-      let j = 0;
-      let k = 0;
-      const pool = new PromisePool(() => {
-        for (;;) {
-          if (i < txs.length) {
-            const tx = txs[i];
-
-            if (j < tx.vin.length) {
-              const oldJ = j;
-              j++;
-              const vin = tx.vin[oldJ];
-
-              return utxoCache.addVin(tx.txid, vin);
+    return Promise.all([
+      new Promise((accept, reject) => {
+        request({
+          method: 'POST',
+          url: `http://localhost:${BITCOIND_PORT_BACK}`,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+          },
+          body: {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "searchrawtransactions",
+            "params": [
+              address,
+              1,
+              lastTxIndex,
+              9999999,
+            ]
+          },
+          json: true,
+        }, (err, res, body) => {
+          if (!err) {
+            if (!body.error) {
+              accept(body.result);
             } else {
-              if (k < tx.vout.length) {
-                const oldK = k;
-                k++;
-                const vout = tx.vout[oldK];
-
-                return utxoCache.addVout(tx.txid, vout);
-              } else {
-                i++;
-                j = 0;
-                k = 0;
-
-                continue;
-              }
+              const err = new Error(JSON.stringify(body.error));
+              reject(err);
             }
           } else {
-            return null;
+            reject(err);
           }
-        }
-      }, 8);
+        });
+      }),
+      new Promise((accept, reject) => {
+        request({
+          method: 'POST',
+          url: `http://localhost:${BITCOIND_PORT_BACK}`,
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+          },
+          body: {
+            "jsonrpc": "2.0",
+            "id": 0,
+            "method": "getrawmempool",
+            "params": [
+              true,
+            ],
+          },
+          json: true,
+        }, (err, res, body) => {
+          if (!err) {
+            if (!body.error) {
+              accept(body.result);
+            } else {
+              const err = new Error(JSON.stringify(body.error));
+              reject(err);
+            }
+          } else {
+            reject(err);
+          }
+        });
+      }),
+    ])
+    .then(([
+      txs,
+      unconfirmedTxs,
+    ]) => {
+      for (let i = 0; i < txs.length; i++) {
+        const tx = txs[i];
+        utxoCache.addTx(tx);
+      }
+      for (let i = 0; i < unconfirmedTxs.length; i++) {
+        const unconfirmedTx = unconfirmedTxs[i];
+        utxoCache.addTx(unconfirmedTx);
+      }
 
       utxoCache.setLastBlockIndex(lastTxIndex + txs.length);
 
-      return pool.start()
-        .then(() => utxoCache.getUtxos());
+      return utxoCache.getUtxos();
     });
   };
   const _requestGetTxOut = (/* address, */txid, vout) => new Promise((accept, reject) => {
