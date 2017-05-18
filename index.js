@@ -179,9 +179,6 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
             "jsonrpc": "2.0",
             "id": 0,
             "method": "getrawmempool",
-            "params": [
-              true,
-            ],
           },
           json: true,
         }, (err, res, body) => {
@@ -196,7 +193,34 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
             reject(err);
           }
         });
-      }),
+      })
+        .then(txids => Promise.all(txids.map(txid => new Promise((accept, reject) => {
+          request({
+            method: 'POST',
+            url: `http://localhost:${BITCOIND_PORT_BACK}`,
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+            },
+            body: {
+              "jsonrpc": "2.0",
+              "id": 0,
+              "method": "getrawtransaction",
+              "params": [
+                txid,
+                1,
+              ]
+            },
+            json: true,
+          }, (err, res, body) => {
+            if (!body.error) {
+              accept(body.result);
+            } else {
+              const err = new Error(JSON.stringify(body.error));
+              reject(err);
+            }
+          })
+        })))),
     ])
     .then(([
       txs,
