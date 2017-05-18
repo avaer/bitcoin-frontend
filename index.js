@@ -48,17 +48,17 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
     constructor(address) {
       this.address = address;
 
-      this.lastBlockIndex = 0;
+      this.lastTxIndex = 0;
       this.utxos = [];
       // this.balance = 0;
     }
 
-    getLastBlockIndex() {
-      return this.lastBlockIndex;
+    getLastTxIndex() {
+      return this.lastTxIndex;
     }
 
-    setLastBlockIndex(lastBlockIndex) {
-      this.lastBlockIndex = lastBlockIndex;
+    setLastBlockIndex(lastTxIndex) {
+      this.lastTxIndex = lastTxIndex;
     }
 
     getUtxos() {
@@ -73,7 +73,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         const utxoIndex = this.utxos.findIndex(utxo => utxo.txid === utxoTxid && utxo.vout === utxoVout);
 
         if (utxoIndex !== -1) {
-          const utxo = this.utxos.splice(utxoIndex, 1)[0];
+          this.utxos.splice(utxoIndex, 1);
           /* const {value} = utxo;
           this.balance += value; */
 
@@ -120,6 +120,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       utxoCache = new UtxoCache(address);
       utxoCaches[address] = utxoCache;
     }
+    const lastTxIndex = utxoCache.getLastBlockIndex();
 
     return new Promise((accept, reject) => {
       request({
@@ -132,7 +133,13 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         body: {
           "jsonrpc": "2.0",
           "id": 0,
-          "method": "getblockcount",
+          "method": "searchrawtransactions",
+          "params": [
+            address,
+            1,
+            lastTxIndex,
+            9999999,
+          ]
         },
         json: true,
       }, (err, res, body) => {
@@ -148,84 +155,46 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         }
       });
     })
-    .then(currentBlockIndex => {
-      const lastBlockIndex = utxoCache.getLastBlockIndex();
-      const numBlocks = currentBlockIndex - lastBlockIndex;
+    .then(txs => {
+      let i = 0;
+      let j = 0;
+      let k = 0;
+      const pool = new PromisePool(() => {
+        for (;;) {
+          if (i < txs.length) {
+            const tx = txs[i];
 
-      return new Promise((accept, reject) => {
-        request({
-          method: 'POST',
-          url: `http://localhost:${BITCOIND_PORT_BACK}`,
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
-          },
-          body: {
-            "jsonrpc": "2.0",
-            "id": 0,
-            "method": "searchrawtransactions",
-            "params": [
-              address,
-              1,
-              lastBlockIndex,
-              numBlocks,
-            ]
-          },
-          json: true,
-        }, (err, res, body) => {
-          if (!err) {
-            if (!body.error) {
-              accept(body.result);
+            if (j < tx.vin.length) {
+              const oldJ = j;
+              j++;
+              const vin = tx.vin[oldJ];
+
+              return utxoCache.addVin(tx.txid, vin);
             } else {
-              const err = new Error(JSON.stringify(body.error));
-              reject(err);
+              if (k < tx.vout.length) {
+                const oldK = k;
+                k++;
+                const vout = tx.vout[oldK];
+
+                return utxoCache.addVout(tx.txid, vout);
+              } else {
+                i++;
+                j = 0;
+                k = 0;
+
+                continue;
+              }
             }
           } else {
-            reject(err);
+            return null;
           }
-        });
-      })
-      .then(txs => {
-        let i = 0;
-        let j = 0;
-        let k = 0;
-        const pool = new PromisePool(() => {
-          for (;;) {
-            if (i < txs.length) {
-              const tx = txs[i];
+        }
+      }, 8);
 
-              if (j < tx.vin.length) {
-                const oldJ = j;
-                j++;
-                const vin = tx.vin[oldJ];
+      utxoCache.setLastBlockIndex(lastTxIndex + txs.length);
 
-                return utxoCache.addVin(tx.txid, vin);
-              } else {
-                if (k < tx.vout.length) {
-                  const oldK = k;
-                  k++;
-                  const vout = tx.vout[oldK];
-
-                  return utxoCache.addVout(tx.txid, vout);
-                } else {
-                  i++;
-                  j = 0;
-                  k = 0;
-
-                  continue;
-                }
-              }
-            } else {
-              return null;
-            }
-          }
-        }, 8);
-
-        utxoCache.setLastBlockIndex(currentBlockIndex);
-
-        return pool.start()
-          .then(() => utxoCache.getUtxos());
-      });
+      return pool.start()
+        .then(() => utxoCache.getUtxos());
     });
   };
   const _requestGetTxOut = (/* address, */txid, vout) => new Promise((accept, reject) => {
