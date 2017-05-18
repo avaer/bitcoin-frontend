@@ -44,7 +44,79 @@ const _requestCerts = () => new Promise((accept, reject) => {
   }
 });
 const _initBitcoindServer = certs => new Promise((accept, reject) => {
+  class UtxoCache {
+    constructor(address) {
+      this.address = address;
+
+      this.lastBlockIndex = 0;
+      this.utxos = [];
+      // this.balance = 0;
+    }
+
+    getLastBlockIndex() {
+      return this.lastBlockIndex;
+    }
+
+    setLastBlockIndex(lastBlockIndex) {
+      this.lastBlockIndex = lastBlockIndex;
+    }
+
+    addVin(txid, vin) {
+      const {txid: utxoTxid} = vin;
+
+      if (utxoTxid) {
+        const {vout: utxoVout} = vin;
+        const utxoIndex = this.utxos.findIndex(utxo => utxo.txid === utxoTxid && utxo.vout === utxoVout);
+
+        if (utxoIndex !== -1) {
+          const utxo = this.utxos.splice(utxoIndex, 1)[0];
+          /* const {value} = utxo;
+          this.balance += value; */
+
+          return Promise.resolve();
+        } else {
+          const err = new Error('could not find txout: ' + txout);
+          return Promise.reject(err);
+        }
+      } else {
+        return Promise.resolve();
+      }
+    }
+
+    addVout(txid, vout) {
+      const {address} = this;
+
+      if (vout.scriptPubKey && vout.scriptPubKey.addresses && vout.scriptPubKey.addresses.includes(address)) {
+        const utxo = {
+          txid: txid,
+          vout: vout,
+          address: address,
+          account: '',
+          scriptPubKey: vout.scriptPubKey.hex,
+          confirmations: vout.confirmations,
+          amount: vout.value,
+          satoshis: vout.value * 1e8,
+          spendable: true,
+          solvable: true,
+        };
+        this.utxos.push(utxo);
+
+        /* const {value} = vout;
+        this.balance -= value; */
+      }
+
+      return Promise.resolve();
+    }
+  }
+  const utxoCaches = {};
+
   const _requestUtxos = address => new Promise((accept, reject) => {
+    let utxoCache = utxoCaches[address];
+    if (!utxoCache) {
+      utxoCache = new UtxoCache(address);
+      utxoCaches[address] = utxoCache;
+    }
+
     request({
       method: 'POST',
       url: `http://localhost:${BITCOIND_PORT_BACK}`,
@@ -55,13 +127,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       body: {
         "jsonrpc": "2.0",
         "id": 0,
-        "method": "searchrawtransactions",
-        "params": [
-          address,
-          1,
-          0,
-          9999999
-        ]
+        "method": "getblockcount",
       },
       json: true,
     }, (err, res, body) => {
@@ -77,30 +143,71 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       }
     });
   })
+  .then(currentBlockIndex => {
+    const lastBlockIndex = utxoCache.getLastBlockIndex();
+    const numBlocks = currentBlockIndex - lastBlockIndex;
+
+    return new Promise((accept, reject) => {
+      request({
+        method: 'POST',
+        url: `http://localhost:${BITCOIND_PORT_BACK}`,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': 'Basic ' + new Buffer('backenduser:backendpassword', 'utf8').toString('base64'),
+        },
+        body: {
+          "jsonrpc": "2.0",
+          "id": 0,
+          "method": "searchrawtransactions",
+          "params": [
+            address,
+            1,
+            lastBlockIndex,
+            numBlocks,
+          ]
+        },
+        json: true,
+      }, (err, res, body) => {
+        if (!err) {
+          if (!body.error) {
+            accept(body.result);
+          } else {
+            const err = new Error(JSON.stringify(body.error));
+            reject(err);
+          }
+        } else {
+          reject(err);
+        }
+      });
+    })
     .then(txs => {
-      const txouts = [];
       let i = 0;
       let j = 0;
+      let k = 0;
       const pool = new PromisePool(() => {
         for (;;) {
           if (i < txs.length) {
             const tx = txs[i];
 
-            if (j < tx.vout.length) {
+            if (j < tx.vin.length) {
               const oldJ = j;
               j++;
+              const vin = tx.vin[oldJ];
 
-              return _requestGetTxOut(address, tx.txid, oldJ)
-                .then(txout => {
-                  if (txout) {
-                    txouts.push(txout);
-                  }
-                });
+              return utxoCache.addVin(tx.txid, vin);
             } else {
-              i++;
-              j = 0;
+              if (k < tx.vout.length) {
+                const oldK = k;
+                k++;
+                const vout = tx.vout[oldK];
 
-              continue;
+                return utxoCache.addVout(tx.txid, vout);
+              } else {
+                i++;
+                j = 0;
+
+                continue;
+              }
             }
           } else {
             return null;
@@ -108,10 +215,13 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         }
       }, 8);
 
+      utxoCache.setLastBlockIndex(currentBlockIndex);
+
       return pool.start()
-        .then(() => txouts);
+        .then(() => utxoCache.getUtxos());
     });
-  const _requestGetTxOut = (address, txid, vout) => new Promise((accept, reject) => {
+  });
+  const _requestGetTxOut = (/* address, */txid, vout) => new Promise((accept, reject) => {
     request({
       method: 'POST',
       url: `http://localhost:${BITCOIND_PORT_BACK}`,
@@ -122,10 +232,9 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       body: {
         "jsonrpc": "2.0",
         "id": 0,
-        "method": "gettxout",
+        "method": "gettransaction",
         "params": [
           txid,
-          vout,
         ]
       },
       json: true,
@@ -138,7 +247,8 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       }
     })
   })
-  .then(txout => {
+  .then(tx => tx.vout[vout]);
+  /* .then(txout => {
     if (txout) {
       if (txout.scriptPubKey.addresses && txout.scriptPubKey.addresses.includes(address)) {
         return {
@@ -159,7 +269,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
     } else {
       return null;
     }
-  });
+  }); */
   const _requestSend = tx => new Promise((accept, reject) => {
     request({
       method: 'POST',
