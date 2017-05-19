@@ -51,7 +51,6 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       this.lastTxIndex = 0;
       this.utxos = [];
       this.seenTxIndex = {};
-      // this.balance = 0;
     }
 
     getLastTxIndex() {
@@ -66,6 +65,22 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       return this.utxos;
     }
 
+    canAddTx(tx) {
+      for (let i = 0; i < tx.vin.length; i++) {
+        const vin = tx.vin[i];
+        const {txid: utxoTxid} = vin;
+
+        if (utxoTxid) {
+          const {vout: utxoVout} = vin;
+
+          if (!this.utxos.every(utxo => utxo.txid === utxoTxid && utxo.vout === utxoVout)) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+
     addVin(txid, vin) {
       const {txid: utxoTxid} = vin;
 
@@ -75,10 +90,6 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
 
         if (utxoIndex !== -1) {
           this.utxos.splice(utxoIndex, 1);
-          /* const {value} = utxo;
-          this.balance += value; */
-        } else {
-          throw new Error('could not find txout: ' + utxoTxid);
         }
       }
     }
@@ -100,9 +111,6 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
           solvable: true,
         };
         this.utxos.push(utxo);
-
-        /* const {value} = vout;
-        this.balance -= value; */
       }
     }
 
@@ -110,16 +118,24 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       const {txid} = tx;
 
       if (!this.seenTxIndex[txid]) {
-        const {vin, vout} = tx;
+        if (this.canAddTx(tx)) {
+          const {vin, vout} = tx;
 
-        for (let i = 0; i < vin.length; i++) {
-          this.addVin(txid, vin[i]);
-        }
-        for (let i = 0; i < vout.length; i++) {
-          this.addVout(txid, vout[i]);
-        }
+          for (let i = 0; i < vin.length; i++) {
+            this.addVin(txid, vin[i]);
+          }
+          for (let i = 0; i < vout.length; i++) {
+            this.addVout(txid, vout[i]);
+          }
 
-        this.seenTxIndex[txid] = true;
+          this.seenTxIndex[txid] = true;
+
+          return true;
+        } else {
+          return false;
+        }
+      } else {
+        return true;
       }
     }
   }
@@ -226,13 +242,16 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       txs,
       unconfirmedTxs,
     ]) => {
-      for (let i = 0; i < txs.length; i++) {
-        const tx = txs[i];
-        utxoCache.addTx(tx);
-      }
-      for (let i = 0; i < unconfirmedTxs.length; i++) {
-        const unconfirmedTx = unconfirmedTxs[i];
-        utxoCache.addTx(unconfirmedTx);
+      let allTxs = txs.concat(unconfirmedTxs);
+      for (;;) { // loop to join all transactions even if they're all in a line
+        const rejectedTxs = allTxs.filter(tx => !utxoCache.addTx(tx));
+
+        if (rejectedTxs.length === 0 || rejectedTxs.length === allTxs.length) {
+          break;
+        } else {
+          allTxs = rejectedTxs;
+          continue;
+        }
       }
 
       utxoCache.setLastBlockIndex(lastTxIndex + txs.length);
