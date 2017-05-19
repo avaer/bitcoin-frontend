@@ -73,7 +73,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         if (utxoTxid) {
           const {vout: utxoVout} = vin;
 
-          if (!this.utxos.every(utxo => utxo.txid === utxoTxid && utxo.vout === utxoVout)) {
+          if (!this.utxos.some(utxo => utxo.txid === utxoTxid && utxo.vout === utxoVout)) {
             return false;
           }
         }
