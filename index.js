@@ -224,7 +224,7 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
         }
 
         const utxos = utxoCache.getUtxos();
-        if (!_arrayEquals(utxos, lastUtxos)) {
+        if (JSON.stringify(utxos) !== JSON.stringify(lastUtxos)) {
           lastUtxos = utxos.slice();
           continue;
         } else {
@@ -475,7 +475,6 @@ const _jsonParse = s => {
     return undefined;
   }
 };
-const _arrayEquals = (a, b) => a.length === b.length && a.every((ai, i) => ai === b[i]);
 
 _requestCerts()
   .then(certs => Promise.all([
