@@ -65,22 +65,6 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       return this.utxos;
     }
 
-    canAddTx(tx) {
-      for (let i = 0; i < tx.vin.length; i++) {
-        const vin = tx.vin[i];
-        const {txid: utxoTxid} = vin;
-
-        if (utxoTxid) {
-          const {vout: utxoVout} = vin;
-
-          if (!this.utxos.some(utxo => utxo.txid === utxoTxid && utxo.vout === utxoVout)) {
-            return false;
-          }
-        }
-      }
-      return true;
-    }
-
     addVin(txid, vin) {
       const {txid: utxoTxid} = vin;
 
@@ -97,7 +81,10 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
     addVout(txid, vout) {
       const {address} = this;
 
-      if (vout.scriptPubKey && vout.scriptPubKey.addresses && vout.scriptPubKey.addresses.includes(address)) {
+      if (
+        vout.scriptPubKey && vout.scriptPubKey.addresses && vout.scriptPubKey.addresses.includes(address) &&
+        !this.utxos.some(utxo => utxo.txid === txid && utxo.vout === vout.n)
+      ) {
         const utxo = {
           txid: txid,
           vout: vout.n,
@@ -115,27 +102,13 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
     }
 
     addTx(tx) {
-      const {txid} = tx;
+      const {txid, vin, vout} = tx;
 
-      if (!this.seenTxIndex[txid]) {
-        if (this.canAddTx(tx)) {
-          const {vin, vout} = tx;
-
-          for (let i = 0; i < vin.length; i++) {
-            this.addVin(txid, vin[i]);
-          }
-          for (let i = 0; i < vout.length; i++) {
-            this.addVout(txid, vout[i]);
-          }
-
-          this.seenTxIndex[txid] = true;
-
-          return true;
-        } else {
-          return false;
-        }
-      } else {
-        return true;
+      for (let i = 0; i < vin.length; i++) {
+        this.addVin(txid, vin[i]);
+      }
+      for (let i = 0; i < vout.length; i++) {
+        this.addVout(txid, vout[i]);
       }
     }
   }
@@ -242,15 +215,20 @@ const _initBitcoindServer = certs => new Promise((accept, reject) => {
       txs,
       unconfirmedTxs,
     ]) => {
-      let allTxs = txs.concat(unconfirmedTxs);
+      const allTxs = txs.concat(unconfirmedTxs);
+      let lastUtxos = [];
       for (;;) { // loop to join all transactions even if they're all in a line
-        const rejectedTxs = allTxs.filter(tx => !utxoCache.addTx(tx));
+        for (let i = 0; i < allTxs.length; i++) {
+          const tx = allTxs[i];
+          utxoCache.addTx(tx);
+        }
 
-        if (rejectedTxs.length === 0 || rejectedTxs.length === allTxs.length) {
-          break;
-        } else {
-          allTxs = rejectedTxs;
+        const utxos = utxoCache.getUtxos();
+        if (!_arrayEquals(utxos, lastUtxos)) {
+          lastUtxos = utxos.slice();
           continue;
+        } else {
+          break;
         }
       }
 
@@ -497,6 +475,7 @@ const _jsonParse = s => {
     return undefined;
   }
 };
+const _arrayEquals = (a, b) => a.length === b.length && a.every((ai, i) => ai === b[i]);
 
 _requestCerts()
   .then(certs => Promise.all([
